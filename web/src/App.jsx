@@ -197,14 +197,15 @@ function Fitment({ flash }) {
   </>
 }
 
-function Evaluations({ evaluations, refresh, flash }) {
+function Evaluations({ evaluations, refresh, flash, datasets, models, monitoring }) {
   const [threshold, setThreshold] = useState(0.8)
+  const [modelVersion, setModelVersion] = useState('rules-tfidf-v1')
   const [detail, setDetail] = useState(null)
   const [busy, setBusy] = useState(false)
   useEffect(() => { if (evaluations.length) request(`/evaluations/${evaluations[0].id}`).then(setDetail).catch(error => flash(error.message, true)) }, [evaluations[0]?.id])
   async function run() {
     setBusy(true)
-    try { setDetail(await post('/evaluations', { threshold: Number(threshold) })); await refresh(); flash('Evaluation completed and saved.') }
+    try { setDetail(await post('/evaluations', { threshold: Number(threshold), model_version: modelVersion })); await refresh(); flash('Evaluation completed and saved.') }
     catch (error) { flash(error.message, true) }
     finally { setBusy(false) }
   }
@@ -213,15 +214,22 @@ function Evaluations({ evaluations, refresh, flash }) {
     catch (error) { flash(error.message, true) }
   }
   return <>
-    <div className="page-title"><span className="eyebrow">04 / EXPERIMENTS</span><h1>Evaluations</h1><p>Compare thresholds on curated labeled demo pairs. Inspect mistakes before trusting a matching rule.</p></div>
-    <div className="notice"><span>ⓘ</span><p>Metrics are computed on <strong>16 synthetic, selected pairs</strong>. The failure rate counts scoring errors in this run. It is not an API uptime measure or a production accuracy claim.</p></div>
-    <Panel kicker="NEW RUN" title="Choose a review threshold"><div className="threshold-row"><div><label htmlFor="threshold">Minimum match score <strong>{Number(threshold).toFixed(2)}</strong></label><input id="threshold" aria-label="Minimum match score" type="range" min="0.55" max="1" step="0.01" value={threshold} onChange={event => setThreshold(event.target.value)} /><div className="range-labels"><span>More candidates</span><span>Stricter matches</span></div></div><button className="button button-primary" disabled={busy} onClick={run}>{busy ? 'Running…' : 'Run evaluation →'}</button></div></Panel>
+    <div className="page-title"><span className="eyebrow">04 / EXPERIMENTS</span><h1>Evaluations</h1><p>Compare versioned rules and thresholds on curated labeled pairs. Inspect mistakes before trusting a matching rule.</p></div>
+    <div className="notice"><span>ⓘ</span><p>Metrics use <strong>{datasets?.current.label_count || 0} synthetic, selected pairs</strong>. Compare runs with the same dataset version. Scoring failures and API server failures are separate measures; neither estimates production accuracy.</p></div>
+    <Panel kicker="DATASET LINEAGE" title={`Current dataset ${datasets?.current.version || '—'}`}>
+      <p className="muted">{datasets?.current.catalogue_count || 0} catalogues · {datasets?.current.record_count || 0} source rows · {datasets?.current.label_count || 0} labeled pairs. Importing a CSV creates a new fingerprint; saved runs keep their original version.</p>
+      <p className="fine-print">{datasets?.versions.length || 0} evaluated dataset version(s) in history.</p>
+    </Panel>
+    <Panel kicker="NEW RUN" title="Choose a model and threshold"><div className="experiment-controls">
+      <label className="model-picker" htmlFor="model-version"><span>Matching model</span><select id="model-version" value={modelVersion} onChange={event => setModelVersion(event.target.value)}>{models?.versions.map(model => <option value={model.id} key={model.id}>{model.id}</option>)}</select><small>{models?.versions.find(model => model.id === modelVersion)?.description}</small></label>
+      <div className="threshold-row"><div><label htmlFor="threshold">Minimum match score <strong>{Number(threshold).toFixed(2)}</strong></label><input id="threshold" aria-label="Minimum match score" type="range" min="0.55" max="1" step="0.01" value={threshold} onChange={event => setThreshold(event.target.value)} /><div className="range-labels"><span>More candidates</span><span>Stricter matches</span></div></div><button className="button button-primary" disabled={busy} onClick={run}>{busy ? 'Running…' : 'Run evaluation →'}</button></div>
+    </div><p className="fine-print">The review queue continues to use rules-tfidf-v1. Evaluation never merges records.</p></Panel>
     {detail && <><div className="metric-grid">
       <Metric label="Precision" value={percent(detail.precision)} note="Correct / predicted matches" />
       <Metric label="Recall" value={percent(detail.recall)} note="Found / labeled matches" />
       <Metric label="F1 score" value={percent(detail.f1)} note="Precision–recall balance" accent />
       <Metric label="Retrieval @ 3" value={percent(detail.recall_at_3)} note="Positive query in top three" />
-    </div><div className="two-col">
+    </div>{detail.data_version !== datasets?.current.version && <div className="notice"><span>ⓘ</span><p>This run used dataset {detail.data_version}. The current import set is {datasets?.current.version}; retrieval scores may differ.</p></div>}<div className="two-col">
       <Panel kicker="RUN DETAIL" title={`Experiment #${detail.id}`}><div className="detail-grid">{[
         ['Dataset version', detail.data_version], ['Model version', detail.model_version],
         ['Labeled pairs', detail.label_count], ['Threshold', detail.threshold.toFixed(2)],
@@ -230,21 +238,26 @@ function Evaluations({ evaluations, refresh, flash }) {
       ].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div></Panel>
       <Panel kicker="ERROR ANALYSIS" title="Where the rule misses"><div className="error-list">{detail.errors?.length ? detail.errors.map((item, i) => <div className="error-row" key={i}><span className={`tag ${item.expected ? 'tag-amber' : 'tag-red'}`}>{item.expected ? 'Missed match' : 'False match'}</span><strong>{item.left.sku} ↔ {item.right.sku}</strong><span>score {score(item.score)}</span></div>) : <Empty title="No mistakes on this sample" detail="The curated set is small; a clean run does not prove general accuracy." />}</div></Panel>
     </div></>}
-    <Panel kicker="HISTORY" title="Compare experiment runs"><div className="table-wrap"><table><thead><tr><th>Run</th><th>Threshold</th><th>Precision</th><th>Recall</th><th>F1</th><th>FP / FN</th><th>Version</th></tr></thead><tbody>{evaluations.map(item => <tr className={detail?.id === item.id ? 'row-selected' : ''} onClick={() => selectRun(item.id)} key={item.id}><td><strong>#{item.id}</strong></td><td>{item.threshold.toFixed(2)}</td><td>{percent(item.precision)}</td><td>{percent(item.recall)}</td><td><strong>{percent(item.f1)}</strong></td><td>{item.false_positives} / {item.false_negatives}</td><td className="mono">{item.data_version}</td></tr>)}</tbody></table></div></Panel>
+    <Panel kicker="HISTORY" title="Compare experiment runs"><div className="table-wrap"><table><thead><tr><th>Run</th><th>Model</th><th>Dataset</th><th>Threshold</th><th>Precision</th><th>Recall</th><th>F1</th><th>Retrieval @ 3</th><th>FP / FN</th><th>ms / pair</th></tr></thead><tbody>{evaluations.map(item => <tr className={detail?.id === item.id ? 'row-selected' : ''} onClick={() => selectRun(item.id)} key={item.id}><td><strong>#{item.id}</strong></td><td className="mono">{item.model_version}</td><td className="mono">{item.data_version}</td><td>{item.threshold.toFixed(2)}</td><td>{percent(item.precision)}</td><td>{percent(item.recall)}</td><td><strong>{percent(item.f1)}</strong></td><td>{percent(item.recall_at_3)}</td><td>{item.false_positives} / {item.false_negatives}</td><td>{item.avg_latency_ms.toFixed(2)}</td></tr>)}</tbody></table></div></Panel>
+    <Panel kicker="API MONITORING" title={`Recent ${monitoring?.requests || 0} requests`}>
+      <div className="monitor-grid"><Metric label="Average latency" value={`${monitoring?.avg_latency_ms || 0} ms`} note="API requests" /><Metric label="P95 latency" value={`${monitoring?.p95_latency_ms || 0} ms`} note="Slowest 5% boundary" /><Metric label="Server failures" value={percent(monitoring?.server_failure_rate)} note="HTTP 5xx only" /><Metric label="Client errors" value={percent(monitoring?.client_error_rate)} note="HTTP 4xx validation and missing resources" /></div>
+      <p className="fine-print">Last {monitoring?.window_size || 100} requests, excluding health and monitoring endpoints. Paths omit query strings. Refresh the page for a new snapshot.</p>
+    </Panel>
   </>
 }
 
 export default function App() {
   const [page, setPage] = useState('overview')
-  const [data, setData] = useState({ overview: null, catalogues: [], evaluations: [] })
+  const [data, setData] = useState({ overview: null, catalogues: [], evaluations: [], datasets: null, models: null, monitoring: null })
   const [message, setMessage] = useState(null)
   const [error, setError] = useState(null)
   async function refresh() {
     try {
-      const [overview, catalogues, evaluations] = await Promise.all([
+      const [overview, catalogues, evaluations, datasets, models, monitoring] = await Promise.all([
         request('/overview'), request('/catalogues'), request('/evaluations'),
+        request('/datasets'), request('/models'), request('/monitoring'),
       ])
-      setData({ overview, catalogues, evaluations }); setError(null)
+      setData({ overview, catalogues, evaluations, datasets, models, monitoring }); setError(null)
     } catch (err) { setError(err.message) }
   }
   useEffect(() => { refresh() }, [])
@@ -263,7 +276,7 @@ export default function App() {
           {page === 'catalogues' && <Catalogues catalogues={data.catalogues} refresh={refresh} flash={flash} />}
           {page === 'review' && <Review refresh={refresh} flash={flash} aiEnabled={data.overview.ai_enabled} />}
           {page === 'fitment' && <Fitment flash={flash} />}
-          {page === 'evaluations' && <Evaluations evaluations={data.evaluations} refresh={refresh} flash={flash} />}
+          {page === 'evaluations' && <Evaluations evaluations={data.evaluations} datasets={data.datasets} models={data.models} monitoring={data.monitoring} refresh={refresh} flash={flash} />}
         </>}</div>
       <footer>Parts Intelligence · source-backed catalogue demo <span>Built for inspection, not production fitment decisions</span></footer>
     </main>
