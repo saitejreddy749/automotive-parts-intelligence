@@ -1,0 +1,9 @@
+fastapi==0.141.1
+uvicorn==0.54.0
+SQLAlchemy==2.1.1
+psycopg[binary]==3.3.6
+python-multipart==0.0.32
+scikit-learn>=1.6,<2.0
+numpy>=2.0,<3.0
+azure-storage-blob==12.30.3
+openai==3.19.2
