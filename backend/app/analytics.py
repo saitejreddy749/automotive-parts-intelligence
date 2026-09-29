@@ -8,10 +8,9 @@ import numpy as np
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from .catalogue import ROOT
 from .database import engine
-from .matching import CANDIDATE_FLOOR, MODEL_VERSION, description_similarities, normalize_text, score_pair, vector_for
-from .models import CanonicalPart, Catalogue, Evaluation, GoldPair, Part, Proposal
+from .matching import CANDIDATE_FLOOR, MODEL_VERSION, MODEL_VERSIONS, description_similarities, normalize_text, score_pair, vector_for
+from .models import ApiRequestMetric, CanonicalPart, Catalogue, Evaluation, GoldPair, Part, Proposal
 
 
 def part_dict(part: Part) -> dict:
@@ -48,6 +47,58 @@ def overview(session: Session) -> dict:
             "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION"
         )),
         "model_version": MODEL_VERSION,
+        "data_version": dataset_snapshot(session)["version"],
+    }
+
+
+def dataset_snapshot(session: Session) -> dict:
+    catalogues = session.scalars(select(Catalogue).order_by(Catalogue.sha256)).all()
+    parts = {part.id: part for part in session.scalars(select(Part))}
+    labels = session.scalars(select(GoldPair)).all()
+    pairs = sorted((
+        f"{parts[pair.left_id].supplier.casefold()}:{parts[pair.left_id].sku.casefold()}",
+        f"{parts[pair.right_id].supplier.casefold()}:{parts[pair.right_id].sku.casefold()}",
+        pair.label,
+    ) for pair in labels)
+    fingerprint = hashlib.sha256(json.dumps({
+        "catalogues": sorted(item.sha256 for item in catalogues), "labels": pairs,
+    }, separators=(",", ":"), sort_keys=True).encode()).hexdigest()[:12]
+    return {
+        "version": fingerprint,
+        "catalogue_count": len(catalogues), "record_count": len(parts), "label_count": len(labels),
+        "catalogues": [{"filename": item.filename, "sha256": item.sha256,
+                        "rows": item.record_count} for item in catalogues],
+    }
+
+
+def dataset_history(session: Session) -> dict:
+    current = dataset_snapshot(session)
+    versions = {}
+    for run in session.scalars(select(Evaluation).order_by(Evaluation.id.desc())):
+        item = versions.setdefault(run.data_version, {"version": run.data_version, "runs": 0,
+                                                     "latest_run": run.run_at})
+        item["runs"] += 1
+    versions.setdefault(current["version"], {"version": current["version"],
+                                               "runs": 0, "latest_run": None})
+    return {"current": current, "versions": list(versions.values())}
+
+
+def monitoring_summary(session: Session, limit: int = 100) -> dict:
+    rows = session.scalars(select(ApiRequestMetric).order_by(ApiRequestMetric.id.desc()).limit(limit)).all()
+    latencies = [row.latency_ms for row in rows]
+    count = len(rows)
+    routes = defaultdict(lambda: {"requests": 0, "server_failures": 0})
+    for row in rows:
+        routes[row.path]["requests"] += 1
+        routes[row.path]["server_failures"] += row.status_code >= 500
+    return {
+        "requests": count, "window_size": limit,
+        "avg_latency_ms": round(float(np.mean(latencies)), 2) if count else 0.0,
+        "p95_latency_ms": round(float(np.percentile(latencies, 95)), 2) if count else 0.0,
+        "server_failure_rate": sum(row.status_code >= 500 for row in rows) / count if count else 0.0,
+        "client_error_rate": sum(400 <= row.status_code < 500 for row in rows) / count if count else 0.0,
+        "routes": [{"path": path, **values} for path, values in sorted(routes.items(),
+                   key=lambda item: (-item[1]["requests"], item[0]))],
     }
 
 
@@ -116,7 +167,9 @@ def similar_parts(session: Session, part_id: int, limit: int = 5) -> list[dict]:
             for id_, score in scores[:limit]]
 
 
-def evaluate(session: Session, threshold: float) -> Evaluation:
+def evaluate(session: Session, threshold: float, model_version: str = MODEL_VERSION) -> Evaluation:
+    if model_version not in MODEL_VERSIONS:
+        raise ValueError("Unknown matching model")
     labels = session.scalars(select(GoldPair).order_by(GoldPair.id)).all()
     if not labels:
         raise LookupError("No labeled pairs. Load the demo dataset to run evaluation.")
@@ -131,7 +184,7 @@ def evaluate(session: Session, threshold: float) -> Evaluation:
     for pair in labels:
         left, right = parts[index[pair.left_id]], parts[index[pair.right_id]]
         try:
-            score, signals = score_pair(left, right, similarities[index[left.id], index[right.id]])
+            score, signals = score_pair(left, right, similarities[index[left.id], index[right.id]], model_version)
         except (ValueError, TypeError, IndexError, FloatingPointError) as exc:
             scoring_failures += 1
             score, signals = 0.0, {"scoring_error": type(exc).__name__}
@@ -164,7 +217,7 @@ def evaluate(session: Session, threshold: float) -> Evaluation:
         for right in parts:
             if right.supplier == left.supplier:
                 continue
-            score, _ = score_pair(left, right, similarities[index[left.id], index[right.id]])
+            score, _ = score_pair(left, right, similarities[index[left.id], index[right.id]], model_version)
             if score >= CANDIDATE_FLOOR:
                 ranked.append((score, right.id))
         ranked.sort(key=lambda item: (-item[0], item[1]))
@@ -172,15 +225,14 @@ def evaluate(session: Session, threshold: float) -> Evaluation:
         top1 += bool(ids and ids[0] in target_ids)
         top3 += any(part_id in target_ids for part_id in ids[:3])
 
-    digest = hashlib.sha256(b"".join((ROOT / "data" / name).read_bytes() for name in
-        ("supplier_north.csv", "supplier_south.csv", "gold_pairs.csv"))).hexdigest()[:12]
+    digest = dataset_snapshot(session)["version"]
     record = Evaluation(
         threshold=threshold, label_count=len(labels), precision=precision, recall=recall,
         f1=f1, precision_at_1=top1 / len(per_left) if per_left else 0,
         recall_at_3=top3 / len(per_left) if per_left else 0,
         avg_latency_ms=total_ms / len(labels), failure_rate=scoring_failures / len(labels),
         false_positives=fp, false_negatives=fn, data_version=digest,
-        model_version=MODEL_VERSION, errors_json=json.dumps(errors),
+        model_version=model_version, errors_json=json.dumps(errors),
     )
     session.add(record)
     session.commit()
