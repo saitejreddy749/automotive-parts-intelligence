@@ -85,7 +85,7 @@ The repository contains no credentials. Do not expose the API publicly as-is: it
 ## Test and build
 
 ```bash
-cd backend && pytest -q
+cd backend && python -m pytest -q
 cd ../web && npm run build
 ```
 
