@@ -94,3 +94,13 @@ class Evaluation(Base):
     data_version: Mapped[str] = mapped_column(String(64))
     model_version: Mapped[str] = mapped_column(String(40))
     errors_json: Mapped[str] = mapped_column(Text)
+
+
+class ApiRequestMetric(Base):
+    __tablename__ = "api_request_metrics"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    path: Mapped[str] = mapped_column(String(120))
+    status_code: Mapped[int] = mapped_column(Integer)
+    latency_ms: Mapped[float] = mapped_column(Float)

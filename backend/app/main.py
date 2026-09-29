@@ -1,19 +1,23 @@
 import json
+import logging
 import os
+import re
 from contextlib import asynccontextmanager
+from time import perf_counter
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from .analytics import (
-    canonical_search, catalogue_list, evaluate, evaluation_dict, fitment_search,
-    overview, part_dict, proposal_dict, similar_parts,
+    canonical_search, catalogue_list, dataset_history, evaluate, evaluation_dict,
+    fitment_search, monitoring_summary, overview, part_dict, proposal_dict, similar_parts,
 )
 from .catalogue import CatalogueError, MAX_BYTES, ingest_csv, init_vector_store, seed_demo
 from .database import Base, SessionLocal, engine, get_db
-from .models import CanonicalPart, Evaluation, Part, Proposal, utc_now
+from .matching import MODEL_VERSION, MODEL_VERSIONS
+from .models import ApiRequestMetric, CanonicalPart, Evaluation, Part, Proposal, utc_now
 
 
 @asynccontextmanager
@@ -29,12 +33,41 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Automotive Parts Catalogue Intelligence", version="1.0.0", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def record_api_latency(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path in ("/api/health", "/api/monitoring"):
+        return await call_next(request)
+    started = perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        try:
+            with SessionLocal() as session:
+                metric = ApiRequestMetric(
+                    path=re.sub(r"/\d+(?=/|$)", "/{id}", path)[:120],
+                    status_code=status_code,
+                    latency_ms=(perf_counter() - started) * 1000,
+                )
+                session.add(metric)
+                session.flush()
+                if metric.id % 100 == 0:
+                    session.execute(delete(ApiRequestMetric).where(ApiRequestMetric.id < metric.id - 2000))
+                session.commit()
+        except Exception:
+            logging.getLogger(__name__).exception("Could not record API metric")
+
+
 class ReviewDecision(BaseModel):
     decision: str
 
 
 class EvaluationRequest(BaseModel):
     threshold: float
+    model_version: str = MODEL_VERSION
 
 
 @app.get("/api/health")
@@ -45,6 +78,23 @@ def health():
 @app.get("/api/overview")
 def get_overview(db: Session = Depends(get_db)):
     return overview(db)
+
+
+@app.get("/api/datasets")
+def get_datasets(db: Session = Depends(get_db)):
+    return dataset_history(db)
+
+
+@app.get("/api/models")
+def get_models():
+    return {"default": MODEL_VERSION, "versions": [
+        {"id": key, "description": description} for key, description in MODEL_VERSIONS.items()
+    ]}
+
+
+@app.get("/api/monitoring")
+def get_monitoring(db: Session = Depends(get_db)):
+    return monitoring_summary(db)
 
 
 @app.get("/api/catalogues")
@@ -130,8 +180,10 @@ def get_evaluations(db: Session = Depends(get_db)):
 def run_evaluation(body: EvaluationRequest, db: Session = Depends(get_db)):
     if not 0.0 < body.threshold <= 1.0:
         raise HTTPException(422, detail="Threshold must be greater than 0 and at most 1")
+    if body.model_version not in MODEL_VERSIONS:
+        raise HTTPException(422, detail="Unknown matching model")
     try:
-        return evaluation_dict(evaluate(db, body.threshold), with_errors=True)
+        return evaluation_dict(evaluate(db, body.threshold, body.model_version), with_errors=True)
     except LookupError as exc:
         raise HTTPException(409, detail=str(exc)) from exc
 
