@@ -1,0 +1,10 @@
+supplier,sku,brand,part_number,description,category,make,model,year_start,year_end,engine
+South Supply,S-1,Arcadia,F100,Cabin pollen filter,cabin_filter,Aster,A1,2019,2022,1.6L
+South Supply,S-2,Arcadia,F200,Oil filter engine,oil_filter,Aster,A1,2018,2020,1.6L
+South Supply,S-3,Arcadia,B310,Front brake pad kit,brake_pad,Aster,A1,2018,2021,1.6L
+South Supply,S-4,Meridian,ALT900,Alternator 12V 110 amp,alternator,Boreal,X3,2018,2020,2.0L
+South Supply,S-5,Meridian,ALT901,Alternator 12V 90 amp,alternator,Boreal,X3,2017,2020,2.0L
+South Supply,S-6,Arcadia,F101,Cabin air filter charcoal,cabin_filter,Aster,A1,2018,2021,1.6L
+South Supply,S-7,Crest,SP22,Standard spark plug,spark_plug,Cobalt,C2,2016,2019,1.8L
+South Supply,S-8,Crest,SP24,Spark plug iridium,spark_plug,Cobalt,C2,2016,2019,1.8L
+South Supply,S-9,Arcadia,F100,Cabin air filter for X3,cabin_filter,Boreal,X3,2018,2021,2.0L

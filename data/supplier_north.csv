@@ -1,0 +1,9 @@
+supplier,sku,brand,part_number,description,category,make,model,year_start,year_end,engine
+North Supply,N-101,Arcadia,F-100,Cabin air filter,cabin_filter,Aster,A1,2018,2021,1.6L
+North Supply,N-102,Arcadia,F-200,Engine oil filter,oil_filter,Aster,A1,2018,2021,1.6L
+North Supply,N-103,Arcadia,B-310,Front brake pad set,brake_pad,Aster,A1,2018,2021,1.6L
+North Supply,N-104,Meridian,ALT-900,Alternator 12V 110A,alternator,Boreal,X3,2017,2020,2.0L
+North Supply,N-105,Meridian,ALT-901,Alternator 12V 90A,alternator,Boreal,X3,2017,2020,2.0L
+North Supply,N-106,Arcadia,F-101,Cabin air filter charcoal,cabin_filter,Aster,A1,2018,2021,1.6L
+North Supply,N-107,Crest,SP-22,Spark plug standard,spark_plug,Cobalt,C2,2016,2019,1.8L
+North Supply,N-108,Crest,SP-23,Spark plug iridium,spark_plug,Cobalt,C2,2016,2019,1.8L
