@@ -66,3 +66,41 @@ def test_similar_parts_and_ai_availability(client):
     assert similar.status_code == 200
     assert similar.json()
     assert client.post(f"/api/proposals/{proposal['id']}/ai-review").status_code == 503
+
+
+def test_model_versions_are_selectable_and_keep_review_decisions_manual(client):
+    versions = client.get("/api/models").json()
+    assert {item["id"] for item in versions["versions"]} == {"rules-tfidf-v1", "rules-tfidf-v2"}
+    baseline = client.post("/api/evaluations", json={"threshold": 0.8, "model_version": "rules-tfidf-v1"}).json()
+    guarded = client.post("/api/evaluations", json={"threshold": 0.8, "model_version": "rules-tfidf-v2"}).json()
+    assert guarded["model_version"] == "rules-tfidf-v2"
+    assert guarded["false_positives"] < baseline["false_positives"]
+    assert guarded["data_version"] == baseline["data_version"]
+    assert client.get("/api/overview").json()["pending"] > 0
+    assert client.post("/api/evaluations", json={"threshold": 0.8, "model_version": "unknown"}).status_code == 422
+
+
+def test_new_import_creates_dataset_version_without_changing_old_runs(client):
+    before = client.get("/api/datasets").json()
+    initial = client.get("/api/evaluations").json()[0]
+    assert initial["data_version"] == before["current"]["version"]
+    content = HEADER + "Third Supplier,T-1,Arcadia,F100,Cabin filter,cabin_filter,Aster,A1,2019,2021,1.6L\n"
+    assert client.post("/api/catalogues", files={"file": ("third.csv", content.encode(), "text/csv")}).status_code == 201
+    after = client.get("/api/datasets").json()
+    assert after["current"]["version"] != before["current"]["version"]
+    assert after["current"]["catalogue_count"] == 3
+    current_run = client.post("/api/evaluations", json={"threshold": 0.8}).json()
+    assert current_run["data_version"] == after["current"]["version"]
+    history = client.get("/api/datasets").json()["versions"]
+    assert {item["version"] for item in history} == {initial["data_version"], current_run["data_version"]}
+
+
+def test_api_monitoring_separates_client_errors_from_server_failures(client):
+    assert client.get("/api/parts/999/similar").status_code == 404
+    assert client.post("/api/evaluations", json={"threshold": 0}).status_code == 422
+    summary = client.get("/api/monitoring").json()
+    assert summary["requests"] >= 2
+    assert summary["client_error_rate"] > 0
+    assert summary["server_failure_rate"] == 0
+    assert summary["p95_latency_ms"] >= 0
+    assert any(route["path"] == "/api/parts/{id}/similar" for route in summary["routes"])
